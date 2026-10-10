@@ -28,7 +28,11 @@ async function linkSkillsDir(linkPath: string): Promise<void> {
       }
       await fs.rm(linkPath)
     } else if (stats.isDirectory()) {
-      await removeRegenerableLinkFarm(linkPath)
+      if (await tryLstat(path.join(linkPath, MIRROR_MARKER))) {
+        await fs.rm(linkPath, { recursive: true, force: true })
+      } else {
+        await removeRegenerableLinkFarm(linkPath)
+      }
     } else {
       await fs.rm(linkPath)
     }
@@ -39,7 +43,29 @@ async function linkSkillsDir(linkPath: string): Promise<void> {
       ? SKILLS_SOURCE_DIR
       : path.relative(path.dirname(linkPath), SKILLS_SOURCE_DIR)
   const linkType = process.platform === 'win32' ? 'junction' : 'dir'
-  await fs.symlink(target, linkPath, linkType)
+  try {
+    await fs.symlink(target, linkPath, linkType)
+  } catch (error) {
+    if (!isLinkUnsupported(error)) {
+      throw error
+    }
+    await mirrorSkillsDir(linkPath)
+  }
+}
+
+// Fork change (exFAT drives such as D: cannot hold junctions or symlinks): a real copy,
+// refreshed by every run of this script. Re-run it after editing agents/skills.
+const MIRROR_MARKER = '.mirror-of-agents-skills'
+
+function isLinkUnsupported(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code
+  return code === 'EISDIR' || code === 'EPERM' || code === 'ENOTSUP' || code === 'EINVAL'
+}
+
+async function mirrorSkillsDir(linkPath: string): Promise<void> {
+  await fs.cp(SKILLS_SOURCE_DIR, linkPath, { recursive: true })
+  await fs.writeFile(path.join(linkPath, MIRROR_MARKER), 'copy of agents/skills; regenerate with: node scripts/link-agent-skills.ts\n')
+  console.warn(`Links unsupported here; mirrored agents/skills into ${path.relative(process.cwd(), linkPath)}.`)
 }
 
 /**
